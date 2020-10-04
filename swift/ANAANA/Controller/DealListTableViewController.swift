@@ -22,7 +22,7 @@ final class DealListTableViewController: UITableViewController {
     typealias Store = RxStore<State>
     typealias Coordinator = DealListTableCoordinatorDelegate
 
-    typealias SectionModel = RxDataSources.SectionModel<SectionID, SectionItem>
+    typealias SectionModel = RxDataSources.SectionModel<SectionID, SectionItem>     //わざわざsectionModelを一から定義しなくてよくなる(セクションごとに管理するためにsectionIDがある？)
     typealias DataSource = RxTableViewSectionedReloadDataSource<SectionModel>
 
     private var store: Store!
@@ -188,7 +188,9 @@ extension DealListTableViewController: DependencyInjectable {
     }
 }
 
+// SectionIDとSectionItemを定義
 extension DealListTableViewController {
+    // SectionModelのmodelプロパティに当たる
     enum SectionID: IdentifiableType {
         case deals(title: String)
 
@@ -200,6 +202,7 @@ extension DealListTableViewController {
         }
     }
 
+    // SectionModelのitemsプロパティに当たる
     enum SectionItem: IdentifiableType, Equatable {
         case deal(WalletDealListContentDealInfo)
 
@@ -211,6 +214,7 @@ extension DealListTableViewController {
 
         var sequence: Int {
             switch self {
+            // items(deal)の引数のWalletDealListContentDealInfoのsequenceを返す
             case let .deal(d): return d.sequence
             }
         }
@@ -221,6 +225,7 @@ extension DealListTableViewController.SectionModel {
     static func make(groupedDeals: [String: [WalletDealListContentDealInfo]]) -> [DealListTableViewController.SectionModel] {
         groupedDeals
             .map { title, deals in
+                //modelのcaseの引数にtitleを代入して渡す
                 self.init(model: .deals(title: title), items: deals.map(DealListTableViewController.SectionItem.deal))
             }
             .sorted { $0.sequence < $1.sequence }
