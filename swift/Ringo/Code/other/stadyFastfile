@@ -1,0 +1,261 @@
+# Customise this file, documentation can be found here:
+# https://github.com/fastlane/fastlane/tree/master/fastlane/docs
+# All available actions: https://docs.fastlane.tools/actions
+# can also be listed using the `fastlane actions` command
+
+# Change the syntax highlighting to Ruby
+# All lines starting with a # are ignored when running `fastlane`
+
+# If you want to automatically update fastlane if a new version is available:
+# update_fastlane
+
+# This is the minimum version number required.
+# Update this, if you use features of a newer version
+fastlane_version "2.92.1"
+
+default_platform :ios
+
+def read_short_version
+  version = (`/usr/libexec/PlistBuddy -c "Print CFBundleShortVersionString" ../RingoPass/SupportingFiles/Info.plist`).strip
+  return version
+end
+
+def read_version
+  fullversion = "#{read_short_version}.#{VERSION}"
+  return fullversion
+end
+
+def write_short_version(version_number, plist)
+  sh("/usr/libexec/PlistBuddy -c 'Set CFBundleShortVersionString #{version_number}' ../RingoPass/SupportingFiles/" + plist)
+end
+
+platform :ios do
+  lane :update_lib do
+    cocoapods(try_repo_update_on_error: true)
+    
+      is_exist = carthage_cache_exist(bucket: 'carthage-cache.team-lab.com')
+    if is_exist then
+      carthage_cache_install(bucket: 'carthage-cache.team-lab.com')
+    else
+      carthage(platform: "iOS")
+      carthage_cache_publish(bucket: 'carthage-cache.team-lab.com')
+    end
+  end
+
+  desc ""
+  lane :poc do |options|
+    nextVersion = options[:version] || get_version_number
+    write_short_version(nextVersion, "Info-Poc.plist")
+    gym(
+      scheme: "RingoPass-Develop",
+      configuration: "Develop",
+      workspace: "RingoPass.xcworkspace",
+      export_method: "enterprise",
+      output_name: "RingoPass-Develop.ipa",
+      output_directory: "./build",
+      export_options: {
+       provisioningProfiles: {
+         "com.teamlab.ringopass" => "match InHouse *",
+         "com.teamlab.ringopass.stub" => "match InHouse *",
+         "com.teamlab.ringopass.develop" => "match InHouse *",
+         "com.teamlab.ringopass.staging" => "match InHouse *"
+       }
+     }
+     )
+     gym(
+      scheme: "RingoPass-Poc",
+      configuration: "Poc",
+      workspace: "RingoPass.xcworkspace",
+      export_method: "enterprise",
+      output_name: "RingoPass-Poc.ipa",
+      output_directory: "./build",
+      export_options: {
+       provisioningProfiles: {
+         "com.teamlab.ringopass" => "match InHouse *",
+         "com.teamlab.ringopass.stub" => "match InHouse *",
+         "com.teamlab.ringopass.develop" => "match InHouse *",
+         "com.teamlab.ringopass.staging" => "match InHouse *"
+       }
+     }
+     )
+    #  add_git_tag
+    #  push_git_tags
+  end
+
+  desc "Runs all the tests"
+  lane :test do
+    # update_lib
+    scan(
+      workspace: "RingoPass.xcworkspace",
+      scheme: "ApplicationModelTests",
+      devices: ['iPhone X'],
+      open_report: false
+    )
+  end
+
+  desc "Runs UITest for develop"
+  lane :uitestForDevelop do
+    snapshot(
+      workspace: "RingoPass.xcworkspace",
+      devices: ['iPhone SE', 'iPhone 8', 'iPhone 8 Plus'],
+      output_simulator_logs: true,
+      clear_previous_screenshots: true,
+      output_directory: './screenshots',
+      concurrent_simulators: true,
+      skip_open_summary: true
+    )
+  end
+
+  desc "Runs UITest easy verification"
+  lane :uitest do |options|
+    deveices = options[:devieces] || 'iPhone 8'
+    snapshot(
+      workspace: "RingoPass.xcworkspace",
+      devices: 'iPhone 8',
+      output_simulator_logs: true,
+      clear_previous_screenshots: true,
+      output_directory: './screenshots',
+      concurrent_simulators: true,
+      skip_open_summary: true
+    )
+  end
+
+  desc "Test Success notify for slack"
+  lane :test_success do |options|
+    message = options[:message] || "Server: " + ":jenkins:" + "\nスクリーンショットの確認はこちら : https://s3-ap-northeast-1.amazonaws.com/smartphone-apps.team-lab.com/RingoPass/ios/screenShots-taxi/screenshots.html" + "\n"
+    slack(message: message)
+  end
+
+  desc "Submit a new Beta Build to Apple TestFlight"
+  desc "This will also make sure the profile is up to date"
+  lane :beta do
+    update_lib
+    # match(type: "appstore") # more information: https://codesigning.guide
+    gym(scheme: "RingoPass-Release") # Build your app - more options available
+    pilot
+
+    # sh "your_script.sh"
+    # You can also use other beta testing services here (run `fastlane actions`)
+  end
+
+  desc "Deploy a new version to the App Store"
+  lane :release do
+    update_lib
+    # match(type: "appstore")
+    # snapshot
+    gym(scheme: "RingoPass-Release") # Build your app - more options available
+    deliver(force: true)
+    # frameit
+  end
+
+  desc "Generate ipa, with configuration option"
+  lane :build_with_configuration do |options|
+
+    scheme = options[:scheme] || "RingoPass"
+    configuration = options[:configuration] || "Develop"
+
+    gym(
+     scheme: scheme,
+     configuration: configuration,
+     workspace: "RingoPass.xcworkspace",
+     export_method: "enterprise",
+     output_name: "RingoPass.ipa",
+     export_options: {
+      provisioningProfiles: {
+        "com.teamlab.ringopass" => "match InHouse *",
+        "com.teamlab.ringopass.stub" => "match InHouse *",
+        "com.teamlab.ringopass.develop" => "match InHouse *",
+        "com.teamlab.ringopass.staging" => "match InHouse *"
+      }
+    }
+    )
+  end
+
+  desc "Upload to AWS S3"
+  lane :upload_with_option do |options|
+    date_string = `date "+%Y%m%d-%H%M%S"`.chomp
+    directory = options[:server_type] || "Develop"
+    icon_emoji = options[:icon_emoji] || ":jenkins:"
+    aws_s3(
+      ipa: 'RingoPass.ipa',
+      access_key: ENV["AWS_ACCESS_KEY"],
+      secret_access_key: ENV["AWS_SECRET_KEY"],
+      bucket: "smartphone-apps.team-lab.com",
+      app_directory: "RingoPass/ios/#{directory}/#{date_string}",
+      acl: "authenticated-read",
+      path: "v{CFBundleShortVersionString}_b{CFBundleVersion}_d/",
+      region: "ap-northeast-1"
+    )
+    slack(message: "Server: " + directory + " " + icon_emoji + "\nダウンロードはこちらから : " + ENV["S3_HTML_OUTPUT_PATH"] + "\n")
+  end
+
+  desc "Upload library to AWS S3 using Rome"
+  lane :upload_carthage_frameworks do
+    rome(
+        binary_path: "./Pods/Rome/rome",
+        command: "upload",
+        platform: "iOS",
+        cacheprefix: cache_prefix_for_carthage_cache
+    )
+  end
+
+  desc "Download library to AWS S3 using Rome"
+  lane :download_carthage_frameworks do
+    binary_path = "./Pods/Rome/rome"
+    platform = "iOS"
+    cache_prefix = cache_prefix_for_carthage_cache
+    rome(
+        binary_path: binary_path,
+        command: "download",
+        platform: platform,
+        cacheprefix: cache_prefix
+    )
+    missing_frameworks = rome(
+        binary_path: binary_path,
+        command: "list",
+        missing: true,
+        platform: platform,
+        cacheprefix: cache_prefix
+    ).split(/\R/).map { |n| n.match(/([a-zA-Z\-]+)/, 0) }
+
+    if missing_frameworks.any? then
+        carthage(
+            command: "bootstrap",
+            dependencies: missing_frameworks,
+            platform: platform,
+            cache_builds: true,
+        )
+        upload_carthage_frameworks
+    end
+  end
+
+  desc "CarthageFramworksのCachePrefix"
+  private_lane :cache_prefix_for_carthage_cache do
+      swift_version=sh("xcrun", "swift", "--version", "|", "head", "-1")
+      cache_prefix=swift_version[/\((.+)\)/, 1].gsub(/\s/, "-")
+  end
+
+  # You can define as many lanes as you want
+
+  after_all do |lane|
+    # This block is called, only if the executed lane was successful
+
+    # slack(
+    #   message: "Successfully deployed new App Update."
+    # )
+  end
+
+  error do |lane, exception|
+    slack(
+       message: exception.message,
+       success: false
+     )
+  end
+end
+
+
+# More information about multiple platforms in fastlane: https://github.com/fastlane/fastlane/blob/master/fastlane/docs/Platforms.md
+# All available actions: https://docs.fastlane.tools/actions
+
+# fastlane reports which actions are used
+# No personal data is recorded. Learn more at https://github.com/fastlane/enhancer

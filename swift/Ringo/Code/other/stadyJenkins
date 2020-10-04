@@ -1,0 +1,166 @@
+import groovy.json.JsonOutput
+
+Slack = [
+        CHANNEL: '#jr_ringopass',
+        NAME   : 'Jenkins', // 投稿時に表示される名前
+        URL    : 'https://hooks.slack.com/services/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',
+        RESULTS: [
+                SUCCESS: [ // ビルド成功時のアイコン、カラー、メッセージ
+                           emoji  : ':jenkins:',
+                           color  : '#6fff6f',
+                           message: '',
+                ],
+                FAILURE: [ // ビルド失敗時のアイコン、カラー、メッセージ
+                           emoji  : ':jenkins:',
+                           color  : '#ff6f6f',
+                           message: '',
+                ],
+        ],
+]
+
+pipeline {
+  agent {
+    label "xcode10.2"
+  }
+
+  environment {
+        LANG='en_US.UTF-8'
+        LANGUAGE='en_US.UTF-8'
+        LC_ALL='en_US.UTF-8'
+        DANGER_GITHUB_API_TOKEN = credentials('github.com-bot-sp1-plugin')
+
+        AWS_REGION='ap-northeast-1'
+  }
+
+  stages {
+    stage('bundleTools') {
+      steps {
+        withAWS(credentials: 'Ringo-s3') {
+          sh '''
+              # init ruby and bundler
+              eval "$(rbenv init -)"
+              rbenv local 2.3.3
+              rbenv exec gem install bundler
+              rbenv rehash
+              bundle install --path .bundle
+              bundle exec pod install
+              '''
+        }
+      }
+    }
+    stage('check') {
+      steps {
+        sh '''
+            eval "$(rbenv init -)"
+            rbenv local 2.3.3
+            bundle exec danger
+            '''
+      }
+    }
+    stage('Check Behaviour(UITest)') {
+      when {
+        not {
+           anyOf { branch 'master'; branch 'develop'; branch 'UI-develop'; }
+        }
+      }
+      steps {
+        withAWS(credentials: 'Ringo-s3') {
+          sh '''
+            eval "$(rbenv init -)"
+            rbenv local 2.3.3
+            export SLACK_URL=https://hooks.slack.com/services/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
+            bundle exec fastlane update_lib
+            bundle exec fastlane test
+            bundle exec fastlane uitest
+            bundle exec fastlane test_success message:"UITest Success"
+            '''
+        }
+      }
+    }
+    stage('uploadIPA') {
+      when {
+        anyOf { branch 'master'; branch 'develop'; branch 'UI-develop'; }
+      }
+      steps {
+        withAWS(credentials: 'Ringo-s3') {
+          sh '''
+            eval "$(rbenv init -)"
+            rbenv local 2.3.3
+            export SLACK_URL=https://hooks.slack.com/services/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
+            bundle exec fastlane update_lib
+            bundle exec fastlane build_with_configuration scheme:"RingoPass-Develop" configuration:"Develop"
+            bundle exec fastlane upload_with_option server_type:"Develop" icon_emoji:":jenkins_cute:"
+            bundle exec fastlane build_with_configuration scheme:"RingoPass-Stub" configuration:"Stub"
+            bundle exec fastlane upload_with_option server_type:"Stub" icon_emoji:":jenkins_cute:"
+            '''
+        }
+      }
+    }
+    stage('uploadScreenShot(UITest)') {
+      when { anyOf { branch 'master'; branch 'develop'; branch 'UI-develop'; } }
+      steps {
+        withAWS(credentials: 'Ringo-s3') {
+          sh '''
+            eval "$(rbenv init -)"
+            rbenv local 2.3.3
+            export SLACK_URL=https://hooks.slack.com/services/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
+            bundle exec fastlane update_lib
+            bundle exec fastlane test
+            bundle exec fastlane uitestForDevelop
+            '''
+          s3Upload(file:"screenshots", bucket:'smartphone-apps.team-lab.com', path:'RingoPass/ios/screenShots-taxi/')
+          sh '''
+            eval "$(rbenv init -)"
+            rbenv local 2.3.3
+            export SLACK_URL=https://hooks.slack.com/services/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
+            bundle exec fastlane test_success
+          '''
+        }
+      }
+    }
+  }
+  //ビルド完了後に通知
+  post {
+    success {
+
+            // updateGitHubCommitStatus()
+            notifySlack Slack.RESULTS.SUCCESS
+        }
+        failure {
+            // updateGitHubCommitStatus()
+            notifySlack Slack.RESULTS.FAILURE
+        }
+  }
+}
+
+def notifySlack(Map result) {
+    def payload = JsonOutput.toJson([
+            channel    : Slack.CHANNEL,
+            username   : Slack.NAME,
+            icon_emoji : result.emoji,
+            attachments: [
+                    [
+                            color     : result.color,
+                            title     : "${env.BRANCH_NAME} ${env.BUILD_DISPLAY_NAME}",
+                            text      : result.message,
+                            title_link: env.BUILD_URL,
+                            mrkdwn_in : ['text'],
+                    ],
+            ],
+    ])
+    sh "curl -X POST --data-urlencode \'payload=${payload}\' ${Slack.URL}"
+}
+
+def updateGitHubCommitStatus() {
+    state = currentBuild.currentResult == 'SUCCESS' ? 'SUCCESS' : 'FAILURE'
+    message = "Build ${currentBuild.displayName} ${currentBuild.currentResult == 'SUCCESS' ? 'succeeded' : 'failed'} in ${currentBuild.durationString}"
+    step([
+            $class            : 'GitHubCommitStatusSetter',
+            statusResultSource: [
+                    $class : 'ConditionalStatusResultSource',
+                    results: [
+                            [$class: 'AnyBuildResult', state: state, message: message],
+                    ],
+            ],
+    ])
+}
